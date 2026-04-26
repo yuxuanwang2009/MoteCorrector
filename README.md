@@ -18,6 +18,17 @@ surrounding sky so it leaves no visible seam.
 
 ---
 
+## Installation
+
+1. Download `MoteCorrector.js` from this repository.
+2. In PixInsight: `Script → Feature Scripts… → Add` and select the folder
+   containing `MoteCorrector.js`.
+3. The script appears under `Script → Utilities → MoteCorrector`.
+
+Alternatively, copy `MoteCorrector.js` into your PixInsight scripts directory
+(e.g. `<PI install>/src/scripts/`) and restart PixInsight.
+---
+
 ## How it works
 
 ### The intuition
@@ -77,17 +88,6 @@ just localized and automated across many motes at once.
   starless image automatically. You can also supply your own starless and
   uncheck "Auto-create starless via StarNet2".
 
----
-
-## Installation
-
-1. Download `MoteCorrector.js` from this repository.
-2. In PixInsight: `Script → Feature Scripts… → Add` and select the folder
-   containing `MoteCorrector.js`.
-3. The script appears under `Script → Utilities → MoteCorrector`.
-
-Alternatively, copy `MoteCorrector.js` into your PixInsight scripts directory
-(e.g. `<PI install>/src/scripts/`) and restart PixInsight.
 
 ---
 
