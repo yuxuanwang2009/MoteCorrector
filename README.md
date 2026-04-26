@@ -14,24 +14,53 @@ surrounding sky so it leaves no visible seam.
 
 ## How it works
 
+### The intuition
+
+**The problem.** Dust on your filters or sensor leaves soft dark donuts in the
+stacked image. Flat-field calibration is supposed to erase them, but if a
+speck moved between when you took flats and when you took lights, or your
+flats are stale, leftover donuts survive into the final master.
+
+**The fix in one sentence.** If you take the stacked master, remove the stars,
+and blur the fine detail away, what's left is a smooth portrait of the
+*illumination* — the same thing a flat-frame is supposed to record. Divide
+that smoothed version into the master, and the donuts vanish.
+
+**Why only inside rectangles?** A galaxy's outer halo or a faint nebula are
+also low-frequency structure in the smoothed image. If the script divided
+globally, it would erase real signal. By restricting the correction to a
+small rectangle around each donut — with a feathered edge that fades smoothly
+to zero — the rest of your image is left completely untouched.
+
+**Why sample the local sky?** The smoothed master still carries a sky
+gradient. Normalizing to a global median would brighten or darken the wrong
+amount in different parts of the frame. Instead, MoteCorrector reads the sky
+level along the *perimeter* of each rectangle — clean sky right next to the
+donut — and uses that as the local truth, so the patched region blends
+seamlessly with the surrounding sky.
+
+**What you do.** Draw a box around each donut. Click Apply. Done.
+
+### Under the hood
+
 1. Generate (or supply) a **starless** copy of the master.
 2. Run `MultiscaleLinearTransform` on the starless with the first *N* detail
-   layers disabled. This kills stars and small structure, keeping the
+   layers disabled. This kills stars and small structure and keeps the
    low-frequency illumination — your synthetic flat (`synflat_full`).
 3. For each user-drawn preview, sample the local sky from `synflat_full` along
-   the **rectangle perimeter** (not the global median). This anchors each
-   correction to the local sky level near the mote, which keeps the brightness
-   from drifting under a gradient.
-4. Apply per-mote correction in PixelMath under a feathered mask:
+   the rectangle's **perimeter** (not the global median). This anchors each
+   correction to the local sky level near the mote.
+4. Apply the per-mote correction in PixelMath under a cosine-feathered mask:
 
    $$\text{out} = \text{master}\cdot
    \left(1 + m\cdot\left(\frac{B}{\text{synflat}} - 1\right)\right)$$
 
    where $m \in [0,1]$ is the feathered preview mask and $B$ is the local sky
-   reference for that preview. Overlapping previews are weighted-averaged.
+   reference for that preview. Overlapping previews are weighted-averaged
+   automatically.
 
-The result is identical to a hand-crafted "flat retouch" PixelMath workflow,
-but localized and automated across many motes.
+The math is equivalent to a hand-crafted "flat retouch" PixelMath workflow,
+just localized and automated across many motes at once.
 
 ---
 
