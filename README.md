@@ -27,6 +27,7 @@ surrounding sky so it leaves no visible seam.
 
 Alternatively, copy `MoteCorrector.js` into your PixInsight scripts directory
 (e.g. `<PI install>/src/scripts/`) and restart PixInsight.
+
 ---
 
 ## How it works
