@@ -1,14 +1,20 @@
 # MoteCorrector
 
-A PixInsight script for removing **flat-calibration dust motes** from a stacked
+Dust particles fell on the sensor window or moved during imaging sessions?  This is a PixInsight script for removing **flat-calibration dust motes** from a stacked
 master image, after the fact, without re-shooting flats.
 
-If your master light shows faint donut-shaped shadows that calibration didn't
+If your master light shows or circle-shaped or donut-shaped shadows that calibration didn't
 clean up, MoteCorrector lets you draw a rectangle around each mote and divides
-out a locally-anchored synthetic flat. The correction is feathered into the
+out a locally-anchored local flat. The correction is feathered into the
 surrounding sky so it leaves no visible seam.
 
-![MoteCorrector dialog](screenshots/dialog.png)
+### Before / after
+
+![Before and after correction](screenshots/before_after.png)
+
+### The dialog
+
+![MoteCorrector dialog](screenshots/gui.png)
 
 ---
 
@@ -46,14 +52,14 @@ seamlessly with the surrounding sky.
 1. Generate (or supply) a **starless** copy of the master.
 2. Run `MultiscaleLinearTransform` on the starless with the first *N* detail
    layers disabled. This kills stars and small structure and keeps the
-   low-frequency illumination — your synthetic flat (`synflat_full`).
-3. For each user-drawn preview, sample the local sky from `synflat_full` along
+   low-frequency illumination — your local flat (`local_flat_full`).
+3. For each user-drawn preview, sample the local sky from `local_flat_full` along
    the rectangle's **perimeter** (not the global median). This anchors each
    correction to the local sky level near the mote.
 4. Apply the per-mote correction in PixelMath under a cosine-feathered mask:
 
    $$\text{out} = \text{master}\cdot
-   \left(1 + m\cdot\left(\frac{B}{\text{synflat}} - 1\right)\right)$$
+   \left(1 + m\cdot\left(\frac{B}{\text{local\ flat}} - 1\right)\right)$$
 
    where $m \in [0,1]$ is the feathered preview mask and $B$ is the local sky
    reference for that preview. Overlapping previews are weighted-averaged
@@ -103,11 +109,11 @@ Alternatively, copy `MoteCorrector.js` into your PixInsight scripts directory
 | Parameter | Default | Notes |
 |---|---|---|
 | Feather (px) | 60 | Half-width of the cosine-feather around each preview rectangle. Larger = softer blend, less localized. |
-| MultiscaleLinearTransform layers | 6 | Total wavelet layers. Higher captures larger-scale structure in the synflat. |
-| Disable first N layers | 4 | Number of fine-detail layers to disable. Higher = smoother synflat. |
+| MultiscaleLinearTransform layers | 6 | Total wavelet layers. Higher captures larger-scale structure in the local flat. |
+| Disable first N layers | 4 | Number of fine-detail layers to disable. Higher = smoother local flat. |
 | Apply correction in place | on | If off, creates a new image `<master>_corrected`. |
 | Close auto-generated starless | on | Cleanup intermediate when done. |
-| Close synflat_full | on | Cleanup intermediate when done. |
+| Close local_flat_full | on | Cleanup intermediate when done. |
 
 ### Tips
 

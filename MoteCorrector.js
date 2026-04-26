@@ -5,7 +5,7 @@
 // https://github.com/yuxuanwang2009/MoteCorrector
 //
 // Workflow: open master, draw a preview rectangle around each mote, run script.
-// Builds a low-frequency synthetic flat from a starless copy and divides it
+// Builds a low-frequency local flat from a starless copy and divides it
 // into the master under a feathered, locally-normalized mask per mote.
 
 #feature-id    Utilities > MoteCorrector
@@ -31,7 +31,7 @@ function Params() {
    this.killLayers    = 4;        // disable layers 1..killLayers
    this.inPlace       = true;     // overwrite master instead of creating new image
    this.cleanStarless = true;     // close auto-generated starless when done
-   this.cleanSynflat  = true;     // close synflat_full when done
+   this.cleanLocalFlat  = true;     // close local_flat_full when done
 }
 var params = new Params();
 
@@ -188,7 +188,7 @@ function CorrectorDialog() {
    killSpin.value = params.killLayers;
    killSpin.setFixedWidth(SPIN_W);
    killSpin.toolTip = "Disable the first N detail layers — those carry stars and " +
-                      "fine structure that should not contribute to the synflat.";
+                      "fine structure that should not contribute to the local flat.";
    killSpin.onValueUpdated = function(v) { params.killLayers = v; };
 
    // In-place checkbox
@@ -208,12 +208,12 @@ function CorrectorDialog() {
                                 "starless is never closed.";
    cleanStarlessCheck.onCheck = function(checked) { params.cleanStarless = checked; };
 
-   var cleanSynflatCheck = new CheckBox(this);
-   cleanSynflatCheck.text = "Close synflat_full when done";
-   cleanSynflatCheck.checked = params.cleanSynflat;
-   cleanSynflatCheck.toolTip = "Closes the synflat_full intermediate after correction. " +
+   var cleanLocalFlatCheck = new CheckBox(this);
+   cleanLocalFlatCheck.text = "Close local_flat_full when done";
+   cleanLocalFlatCheck.checked = params.cleanLocalFlat;
+   cleanLocalFlatCheck.toolTip = "Closes the local_flat_full intermediate after correction. " +
                                "Uncheck if you want to inspect or reuse it.";
-   cleanSynflatCheck.onCheck = function(checked) { params.cleanSynflat = checked; };
+   cleanLocalFlatCheck.onCheck = function(checked) { params.cleanLocalFlat = checked; };
 
    // Helper to build a labeled row
    function row(text, ctrl) {
@@ -279,7 +279,7 @@ function CorrectorDialog() {
    inputsSizer.add(row("Starless image:", starlessCombo));
    inputsGroup.sizer = inputsSizer;
 
-   // Group: synflat parameters
+   // Group: local flat parameters
    var paramsGroup = new GroupBox(this);
    paramsGroup.title = "Correction parameters";
    var paramsSizer = new VerticalSizer; paramsSizer.margin = 10; paramsSizer.spacing = 8;
@@ -294,7 +294,7 @@ function CorrectorDialog() {
    var outputSizer = new VerticalSizer; outputSizer.margin = 10; outputSizer.spacing = 8;
    outputSizer.add(inPlaceCheck);
    outputSizer.add(cleanStarlessCheck);
-   outputSizer.add(cleanSynflatCheck);
+   outputSizer.add(cleanLocalFlatCheck);
    outputGroup.sizer = outputSizer;
 
    // Copyright footer
@@ -362,8 +362,8 @@ function correctMotes() {
       }
    }
 
-   // 2. Clone starless → synflat_full
-   var sf = cloneToNewWindow(starless, "synflat_full");
+   // 2. Clone starless → local_flat_full
+   var lf = cloneToNewWindow(starless, "local_flat_full");
 
    // 3. MLT: disable first N detail layers, keep the rest + residual
    var mlt = new MultiscaleLinearTransform;
@@ -375,18 +375,18 @@ function correctMotes() {
    }
    L.push([true, true, 0.000, false, 3.000, 1.00, 1]); // residual always on
    mlt.layers = L;
-   mlt.executeOn(sf.mainView);
-   sf.show();
+   mlt.executeOn(lf.mainView);
+   lf.show();
 
-   // 4. For each preview, compute a local background reference from synflat
+   // 4. For each preview, compute a local background reference from local flat
    //    by sampling its perimeter just outside the rectangle. This anchors
    //    the correction to the local sky level near the mote rather than
    //    the global median, which avoids brightness drift over gradients.
    var f = params.feather;
-   var sfImg = sf.mainView.image;
-   var W = sfImg.width, H = sfImg.height;
+   var lfImg = lf.mainView.image;
+   var W = lfImg.width, H = lfImg.height;
 
-   // Sample synflat along the four sides of (rect expanded by `off` pixels).
+   // Sample local flat along the four sides of (rect expanded by `off` pixels).
    // Skip any side that is off-image. Returns { value, validSides }.
    function localRef(rect, off) {
       var nPts = 7;  // sample points per side
@@ -399,7 +399,7 @@ function correctMotes() {
          var got = false;
          for (var i = 0; i < nPts; ++i) {
             var x = Math.round(xa + (xb - xa) * i / (nPts - 1));
-            if (x >= 0 && x < W) { samples.push(sfImg.sample(x, y, 0)); got = true; }
+            if (x >= 0 && x < W) { samples.push(lfImg.sample(x, y, 0)); got = true; }
          }
          return got;
       }
@@ -409,7 +409,7 @@ function correctMotes() {
          var got = false;
          for (var i = 0; i < nPts; ++i) {
             var y = Math.round(ya + (yb - ya) * i / (nPts - 1));
-            if (y >= 0 && y < H) { samples.push(sfImg.sample(x, y, 0)); got = true; }
+            if (y >= 0 && y < H) { samples.push(lfImg.sample(x, y, 0)); got = true; }
          }
          return got;
       }
@@ -420,7 +420,7 @@ function correctMotes() {
       if (sampleVert (rect.x1 + off, rect.y0, rect.y1)) ++validSides; // right
 
       if (samples.length == 0)
-         return { value: sfImg.median(), validSides: 0 };  // fallback
+         return { value: lfImg.median(), validSides: 0 };  // fallback
 
       samples.sort(function(a, b) { return a - b; });
       var med = (samples.length % 2)
@@ -448,11 +448,11 @@ function correctMotes() {
    var sumMB = weightedB.join("+");
 
    // 5. Apply correction with PixelMath
-   //    output = $T * (1 + min(1, sum_m) * (sum(m_i*B_i)/max(sum_m,eps)/synflat - 1))
+   //    output = $T * (1 + min(1, sum_m) * (sum(m_i*B_i)/max(sum_m,eps)/<local_flat_full> - 1))
    //    Per-mote local B; in overlap regions, weighted-averaged.
-   var sfId = sf.mainView.id;  // robust to auto-suffixed IDs
+   var lfId = lf.mainView.id;  // robust to auto-suffixed IDs
    var expr = "$T*(1+min(1," + sumM + ")*((" + sumMB + ")/max(" + sumM +
-              ",1e-10)/" + sfId + "-1))";
+              ",1e-10)/" + lfId + "-1))";
    var pm = new PixelMath;
    pm.expression = expr;
    pm.useSingleExpression = true;
@@ -465,12 +465,12 @@ function correctMotes() {
                                                : pm.newImageId));
 
    // 6. Optional cleanup of intermediates
-   if (params.cleanSynflat) {
+   if (params.cleanLocalFlat) {
       try {
-         sf.forceClose();
-         Console.writeln("Closed: " + sfId);
+         lf.forceClose();
+         Console.writeln("Closed: " + lfId);
       } catch (e) {
-         Console.warningln("Could not close synflat: " + e);
+         Console.warningln("Could not close local flat: " + e);
       }
    }
    if (params.cleanStarless && starlessAutoGenerated) {
