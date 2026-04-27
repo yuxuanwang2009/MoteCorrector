@@ -20,7 +20,7 @@
 #include <pjsr/UndoFlag.jsh>
 
 #define TITLE   "MoteCorrector"
-#define VERSION "2.0"
+#define VERSION "2.1"
 
 function Params() {
    this.masterId      = "";
@@ -32,6 +32,8 @@ function Params() {
    this.inPlace       = true;     // overwrite master instead of creating new image
    this.cleanStarless = true;     // close auto-generated starless when done
    this.cleanLocalFlat  = true;     // close local_flat_full when done
+   this.useExclusions = false;    // enable exclusion previews
+   this.exclusionIds  = [];       // preview IDs to treat as exclusion regions
 }
 var params = new Params();
 
@@ -85,13 +87,17 @@ function CorrectorDialog() {
       "<b>1.</b> Activate the <i>New Preview</i> tool: " +
          "menu <b>Preview &gt; New Preview.</b>" +
       "<br><b>2.</b> On the master image, drag a rectangle around each mote. " +
-         "Make it generously larger than the donut so the rectangle <i>perimeter</i> " +
+         "Make it slightly larger than the donut so the rectangle <i>perimeter</i> " +
          "sits on clean sky background." +
       "<br><b>3.</b> One preview per mote. They appear as <code>Preview01</code>, " +
          "<code>Preview02</code>, ... in the right-side preview list." +
       "<br><b>4.</b> Avoid placing the rectangle <i>edge</i> on the galaxy/nebula, " +
          "another mote, or the image border &mdash; the local sky reference is sampled " +
-         "from the perimeter.";
+         "from the perimeter." +
+      "<br><b>5.</b> If a faint galaxy inside a mote preview causes overcorrection, " +
+         "draw a smaller preview around the galaxy &mdash; with its <i>perimeter on " +
+         "clean sky</i>, just like a mote rectangle &mdash; then check it in the " +
+         "<i>Exclusion regions</i> list below.";
    var helpSizer = new VerticalSizer;
    helpSizer.margin = 8;
    helpSizer.add(helpText);
@@ -140,16 +146,18 @@ function CorrectorDialog() {
    masterCombo.onItemSelected = function(i) {
       params.masterId = masterCombo.itemText(i);
       updatePreviewStatus();
+      rebuildExclusionTree();
    };
    starlessCombo.onItemSelected = function(i) { params.starlessId = starlessCombo.itemText(i); };
 
    // Refresh button — re-counts previews after user draws them with dialog open
    var refreshBtn = new ToolButton(this);
    refreshBtn.icon = self.scaledResource(":/icons/refresh.png");
-   refreshBtn.toolTip = "Refresh preview count after drawing previews on the master";
-   refreshBtn.onClick = function() { updatePreviewStatus(); };
-
-   updatePreviewStatus();
+   refreshBtn.toolTip = "Refresh preview list after drawing previews on the master";
+   refreshBtn.onClick = function() {
+      updatePreviewStatus();
+      rebuildExclusionTree();
+   };
 
    // Auto-starless checkbox
    var autoCheck = new CheckBox(this);
@@ -215,6 +223,76 @@ function CorrectorDialog() {
                                "Uncheck if you want to inspect or reuse it.";
    cleanLocalFlatCheck.onCheck = function(checked) { params.cleanLocalFlat = checked; };
 
+   // Exclusion regions: previews drawn inside a mote rectangle around faint
+   // galaxies/nebulae left in the starless. The correction is feathered to zero
+   // inside these rectangles so a residual bright bump in local_flat_full does
+   // not darken the source on division.
+   var excludeCheck = new CheckBox(this);
+   excludeCheck.text = "Excluded region (only check the box if your first run shows overcorrection around small galaxies)";
+   excludeCheck.checked = params.useExclusions;
+   excludeCheck.toolTip = "Mark some previews as exclusion regions. The correction is\n" +
+                          "feathered out inside them, so faint galaxies left in the\n" +
+                          "starless do not cause overcorrection.";
+
+   var exclusionTree = new TreeBox(this);
+   exclusionTree.alternateRowColor = true;
+   exclusionTree.numberOfColumns = 1;
+   exclusionTree.headerVisible = false;
+   exclusionTree.rootDecoration = false;
+   exclusionTree.toolTip = "Check each preview that should be treated as an exclusion region.";
+   exclusionTree.enabled = params.useExclusions;
+
+   function rebuildExclusionTree() {
+      exclusionTree.clear();
+      var v = View.viewById(params.masterId);
+      if (v.isNull) { fitTreeToFourRows(); return; }
+      var pvs = v.window.previews;
+      // Drop stale IDs that no longer exist as previews.
+      var live = {};
+      for (var i = 0; i < pvs.length; ++i) live[pvs[i].id] = true;
+      params.exclusionIds = params.exclusionIds.filter(function(id) { return live[id]; });
+      for (var i = 0; i < pvs.length; ++i) {
+         var node = new TreeBoxNode(exclusionTree);
+         var pid = pvs[i].id;
+         node.setText(0, pid);
+         node.checkable = true;
+         node.checked = params.exclusionIds.indexOf(pid) >= 0;
+      }
+      fitTreeToFourRows();
+   }
+
+   // Lock the tree to exactly 4 visible rows. Measures actual row height from
+   // the first node when one exists; otherwise uses a conservative font-based
+   // estimate. Scrollbar appears automatically beyond 4 rows.
+   function fitTreeToFourRows() {
+      var rowH;
+      if (exclusionTree.numberOfChildren > 0) {
+         var rect = exclusionTree.nodeRect(exclusionTree.child(0));
+         rowH = rect.y1 - rect.y0;
+      } else {
+         rowH = exclusionTree.font.lineSpacing + 8;
+      }
+      // 2*frame + 4 rows + small slack so the 4th row isn't clipped by borders.
+      exclusionTree.setFixedHeight(4 * rowH + 8);
+   }
+   fitTreeToFourRows();
+
+   exclusionTree.onNodeUpdated = function(node, col) {
+      var pid = node.text(0);
+      var idx = params.exclusionIds.indexOf(pid);
+      if (node.checked && idx < 0) params.exclusionIds.push(pid);
+      else if (!node.checked && idx >= 0) params.exclusionIds.splice(idx, 1);
+   };
+
+   excludeCheck.onCheck = function(checked) {
+      params.useExclusions = checked;
+      exclusionTree.enabled = checked;
+   };
+
+   // Initial population of preview-derived widgets (tree + status label).
+   updatePreviewStatus();
+   rebuildExclusionTree();
+
    // Helper to build a labeled row
    function row(text, ctrl) {
       var lbl = new Label(self);
@@ -239,6 +317,7 @@ function CorrectorDialog() {
       try {
          correctMotes();
          updatePreviewStatus();
+         rebuildExclusionTree();
       } catch (e) {
          Console.criticalln("Error: " + e);
       }
@@ -288,6 +367,15 @@ function CorrectorDialog() {
    paramsSizer.add(row("Disable first N layers:",           killSpin));
    paramsGroup.sizer = paramsSizer;
 
+   // Group: exclusion regions
+   var exclusionGroup = new GroupBox(this);
+   exclusionGroup.title = "Exclusion regions";
+   var exclusionSizer = new VerticalSizer;
+   exclusionSizer.margin = 10; exclusionSizer.spacing = 8;
+   exclusionSizer.add(excludeCheck);
+   exclusionSizer.add(exclusionTree);
+   exclusionGroup.sizer = exclusionSizer;
+
    // Group: output options
    var outputGroup = new GroupBox(this);
    outputGroup.title = "Output";
@@ -308,6 +396,7 @@ function CorrectorDialog() {
    this.sizer.add(helpBox);
    this.sizer.add(inputsGroup);
    this.sizer.add(paramsGroup);
+   this.sizer.add(exclusionGroup);
    this.sizer.add(outputGroup);
    this.sizer.add(btns);
    this.sizer.addSpacing(4);
@@ -326,14 +415,31 @@ function correctMotes() {
    }
 
    var win = master.window;
-   var previews = win.previews;
-   if (previews.length == 0) {
+   var allPreviews = win.previews;
+   if (allPreviews.length == 0) {
       Console.criticalln("Draw at least one preview around each mote on the master image.");
       return;
    }
 
-   Console.writeln("MoteCorrector: " + previews.length + " mote(s), " +
-                   "MultiscaleLinearTransform layers=" + params.mltLayers +
+   // Split previews into mote rectangles and exclusion rectangles.
+   var previews   = [];   // motes — get corrected
+   var exclusions = [];   // exclusion regions — correction feathered to zero inside
+   for (var pi = 0; pi < allPreviews.length; ++pi) {
+      var pid = allPreviews[pi].id;
+      if (params.useExclusions && params.exclusionIds.indexOf(pid) >= 0)
+         exclusions.push(allPreviews[pi]);
+      else
+         previews.push(allPreviews[pi]);
+   }
+   if (previews.length == 0) {
+      Console.criticalln("All previews are marked as exclusions. " +
+                         "Leave at least one preview around a mote.");
+      return;
+   }
+
+   Console.writeln("MoteCorrector: " + previews.length + " mote(s)" +
+                   (exclusions.length > 0 ? ", " + exclusions.length + " exclusion(s)" : "") +
+                   ", MultiscaleLinearTransform layers=" + params.mltLayers +
                    ", kill first " + params.killLayers +
                    ", feather=" + params.feather + "px");
 
@@ -447,12 +553,49 @@ function correctMotes() {
    var sumM  = maskTerms.join("+");
    var sumMB = weightedB.join("+");
 
+   // Exclusion mask + per-exclusion local flat reference. We sample the local
+   // flat (lf) along the perimeter of each exclusion rect — that is the value
+   // lf would have at the galaxy's location if the galaxy weren't there. We
+   // then substitute this scalar for lf inside the exclusion, so the mote
+   // correction applies the same multiplicative lift to the galaxy as it does
+   // to the surrounding sky. Result: galaxy is preserved, and its background
+   // matches the corrected sky outside the exclusion (no visible patch).
+   var exclTerms     = [];   // e_j (feathered indicator)
+   var exclWeightedB = [];   // e_j * Be_j
+   for (var i = 0; i < exclusions.length; ++i) {
+      var er = win.previewRect(exclusions[i]);
+      var eRef = localRef(er, Math.round(f / 2));
+      var Be = eRef.value;
+      var em = "max(0,min(1,min(x()-" + er.x0 + "," + er.x1 + "-x())/" + f + "+1))*" +
+               "max(0,min(1,min(y()-" + er.y0 + "," + er.y1 + "-y())/" + f + "+1))";
+      exclTerms.push("(" + em + ")");
+      exclWeightedB.push("(" + em + ")*" + Be);
+      var enote = eRef.validSides == 4 ? ""
+                : eRef.validSides == 0 ? " [fallback: global median]"
+                : " [" + eRef.validSides + "/4 sides in-bounds]";
+      Console.writeln("  exclusion " + (i + 1) + ": " + exclusions[i].id +
+                      ", lf perimeter ref = " + Be.toFixed(6) + enote);
+   }
+
    // 5. Apply correction with PixelMath
-   //    output = $T * (1 + min(1, sum_m) * (sum(m_i*B_i)/max(sum_m,eps)/<local_flat_full> - 1))
-   //    Per-mote local B; in overlap regions, weighted-averaged.
+   //    Bm     = sum(m_i*Bm_i)/max(sum_m,eps)        (mote-perimeter sky in master)
+   //    Be     = sum(e_j*Be_j)/max(sum_e,eps)        (exclusion-perimeter sky in lf)
+   //    eMask  = min(1, sum_e)                        (feathered exclusion indicator)
+   //    lf_eff = lf*(1 - eMask) + Be*eMask            (lf with galaxy bumps replaced)
+   //    output = $T * (1 + min(1, sum_m) * (Bm / lf_eff - 1))
    var lfId = lf.mainView.id;  // robust to auto-suffixed IDs
+   var lfEff;
+   if (exclTerms.length > 0) {
+      var sumE  = exclTerms.join("+");
+      var sumEB = exclWeightedB.join("+");
+      var eMask = "min(1," + sumE + ")";
+      var Be    = "(" + sumEB + ")/max(" + sumE + ",1e-10)";
+      lfEff = "(" + lfId + "*(1-" + eMask + ")+(" + Be + ")*" + eMask + ")";
+   } else {
+      lfEff = lfId;
+   }
    var expr = "$T*(1+min(1," + sumM + ")*((" + sumMB + ")/max(" + sumM +
-              ",1e-10)/" + lfId + "-1))";
+              ",1e-10)/" + lfEff + "-1))";
    var pm = new PixelMath;
    pm.expression = expr;
    pm.useSingleExpression = true;
