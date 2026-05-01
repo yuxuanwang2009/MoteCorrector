@@ -20,13 +20,12 @@
 #include <pjsr/UndoFlag.jsh>
 
 #define TITLE   "MoteCorrector"
-#define VERSION "2.1"
+#define VERSION "2.2"
 
 function Params() {
-   this.masterId      = "";
-   this.starlessId    = "";
-   this.autoStarless  = true;     // create starless via StarNet2 internally
-   this.feather       = 60;       // mask feather (px)
+   this.masterId         = "";
+   this.masterIsStarless = false;  // if true, skip StarNet2 and use master as starless
+   this.feather          = 60;     // mask feather (px)
    this.mltLayers     = 6;        // total MLT detail layers
    this.killLayers    = 4;        // disable layers 1..killLayers
    this.inPlace       = true;     // overwrite master instead of creating new image
@@ -104,27 +103,21 @@ function CorrectorDialog() {
    helpBox.sizer = helpSizer;
 
    // ===== Master + preview status =====
-   var masterCombo   = new ComboBox(this);
-   var starlessCombo = new ComboBox(this);
+   var masterCombo = new ComboBox(this);
    var wins = ImageWindow.windows;
-   for (var i = 0; i < wins.length; ++i) {
+   for (var i = 0; i < wins.length; ++i)
       masterCombo.addItem(wins[i].mainView.id);
-      starlessCombo.addItem(wins[i].mainView.id);
-   }
 
    // Fall back to first window only if nothing is set; otherwise keep loaded.
    if (params.masterId == "" && wins.length > 0)
       params.masterId = masterCombo.itemText(0);
-   if (params.starlessId == "" && wins.length > 0)
-      params.starlessId = starlessCombo.itemText(0);
 
    // Select the combo item matching the (loaded or fallback) ID.
    function selectComboItem(combo, id) {
       for (var k = 0; k < combo.numberOfItems; ++k)
          if (combo.itemText(k) == id) { combo.currentItem = k; return; }
    }
-   selectComboItem(masterCombo,   params.masterId);
-   selectComboItem(starlessCombo, params.starlessId);
+   selectComboItem(masterCombo, params.masterId);
 
    // Preview-count indicator
    var previewStatus = new Label(this);
@@ -148,8 +141,6 @@ function CorrectorDialog() {
       updatePreviewStatus();
       rebuildExclusionTree();
    };
-   starlessCombo.onItemSelected = function(i) { params.starlessId = starlessCombo.itemText(i); };
-
    // Refresh button — re-counts previews after user draws them with dialog open
    var refreshBtn = new ToolButton(this);
    refreshBtn.icon = self.scaledResource(":/icons/refresh.png");
@@ -159,17 +150,48 @@ function CorrectorDialog() {
       rebuildExclusionTree();
    };
 
-   // Auto-starless checkbox
-   var autoCheck = new CheckBox(this);
-   autoCheck.text = "Auto-create starless via StarNet2";
-   autoCheck.checked = params.autoStarless;
-   autoCheck.toolTip = "If checked, a starless copy of the master is generated automatically.\n" +
-                       "Requires the StarNet2 process module to be installed in PixInsight.";
-   autoCheck.onCheck = function(checked) {
-      params.autoStarless = checked;
-      starlessCombo.enabled = !checked;
+   // Mutually exclusive checkboxes for starless source. Exactly one is always
+   // checked: clicking the unchecked one toggles modes; clicking an already-
+   // checked one re-asserts it (no-op). This mirrors radio-button semantics
+   // while preserving the requested checkbox visuals.
+   var alreadyStarlessCheck = new CheckBox(this);
+   alreadyStarlessCheck.text = "Image is already starless";
+   alreadyStarlessCheck.checked = params.masterIsStarless;
+   alreadyStarlessCheck.toolTip = "Skip StarNet2 and use the master itself as the starless source\n" +
+                                  "for the local flat. Use this if you pre-ran a starless tool\n" +
+                                  "(e.g. StarXTerminator) and want to feed the result directly.";
+
+   var createStarlessCheck = new CheckBox(this);
+   createStarlessCheck.text = "Create starless image using StarNet2";
+   createStarlessCheck.checked = !params.masterIsStarless;
+   createStarlessCheck.toolTip = "Generate a starless copy of the master via StarNet2.\n" +
+                                 "Requires the StarNet2 process module to be installed in PixInsight.";
+
+   // Forward-referenced: cleanStarlessCheck is created further down. The
+   // closures below run after construction, so the reference resolves fine.
+   function syncCleanStarlessEnabled() {
+      if (cleanStarlessCheck)
+         cleanStarlessCheck.enabled = !params.masterIsStarless;
+   }
+
+   alreadyStarlessCheck.onCheck = function(checked) {
+      if (checked) {
+         params.masterIsStarless = true;
+         createStarlessCheck.checked = false;
+         syncCleanStarlessEnabled();
+      } else {
+         alreadyStarlessCheck.checked = true;  // exactly one must stay on
+      }
    };
-   starlessCombo.enabled = !params.autoStarless;
+   createStarlessCheck.onCheck = function(checked) {
+      if (checked) {
+         params.masterIsStarless = false;
+         alreadyStarlessCheck.checked = false;
+         syncCleanStarlessEnabled();
+      } else {
+         createStarlessCheck.checked = true;
+      }
+   };
 
    // Numeric controls
    var featherSpin = new SpinBox(this);
@@ -215,6 +237,9 @@ function CorrectorDialog() {
                                 "when 'Auto-create starless' is on \u2014 a manually supplied " +
                                 "starless is never closed.";
    cleanStarlessCheck.onCheck = function(checked) { params.cleanStarless = checked; };
+   // Greyed out when "Image is already starless" is on — there is nothing
+   // auto-generated to close in that mode.
+   cleanStarlessCheck.enabled = !params.masterIsStarless;
 
    var cleanLocalFlatCheck = new CheckBox(this);
    cleanLocalFlatCheck.text = "Close local_flat_full when done";
@@ -310,10 +335,6 @@ function CorrectorDialog() {
          Console.criticalln("Pick a master image.");
          return;
       }
-      if (!params.autoStarless && params.starlessId == "") {
-         Console.criticalln("Pick a starless image, or enable auto-create.");
-         return;
-      }
       try {
          correctMotes();
          updatePreviewStatus();
@@ -354,8 +375,8 @@ function CorrectorDialog() {
    var inputsSizer = new VerticalSizer; inputsSizer.margin = 10; inputsSizer.spacing = 8;
    inputsSizer.add(masterRow);
    inputsSizer.add(statusRow);
-   inputsSizer.add(autoCheck);
-   inputsSizer.add(row("Starless image:", starlessCombo));
+   inputsSizer.add(createStarlessCheck);
+   inputsSizer.add(alreadyStarlessCheck);
    inputsGroup.sizer = inputsSizer;
 
    // Group: local flat parameters
@@ -446,24 +467,19 @@ function correctMotes() {
    // 1. Get / generate starless
    var starless;
    var starlessAutoGenerated = false;
-   if (params.autoStarless) {
+   if (params.masterIsStarless) {
+      // Master is already starless — use it directly. No StarNet2, no clone yet
+      // (cloneToNewWindow below produces local_flat_full from this view).
+      starless = master;
+   } else {
       try {
          starless = generateStarless(master);
          starlessAutoGenerated = true;
       } catch (e) {
          Console.criticalln("StarNet2 failed: " + e);
-         Console.criticalln("Either install/configure the StarNet2 module, or uncheck " +
-                            "'Auto-create starless' and provide a pre-made starless image.");
-         return;
-      }
-   } else {
-      starless = View.viewById(params.starlessId);
-      if (starless.isNull) {
-         Console.criticalln("Starless image not found: " + params.starlessId);
-         return;
-      }
-      if (starless.id == master.id) {
-         Console.criticalln("Master and starless must be different images.");
+         Console.criticalln("If your master is already starless, tick " +
+                            "'Master image is already starless' in the dialog. " +
+                            "Otherwise install/configure the StarNet2 module.");
          return;
       }
    }

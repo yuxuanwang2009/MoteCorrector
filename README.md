@@ -103,9 +103,11 @@ just localized and automated across many motes at once.
 ## Requirements
 
 - **PixInsight 1.8.9** or later.
-- **StarNet2** module — only required if you let MoteCorrector generate the
-  starless image automatically. You can also supply your own starless and
-  uncheck "Auto-create starless via StarNet2".
+- **StarNet2** module — required to derive the starless used to build the
+  local flat. If your master is *already* starless (e.g. you pre-ran
+  StarXTerminator on it and want to feed that result directly), tick
+  **Master image is already starless (skip StarNet2)** and StarNet2 is not
+  needed.
 
 
 ---
@@ -141,6 +143,8 @@ second pass:
 | Feather (px) | 60 | Half-width of the cosine-feather around each preview rectangle (mote *and* exclusion). Larger = softer blend, less localized. |
 | MultiscaleLinearTransform layers | 6 | Total wavelet layers. Higher captures larger-scale structure in the local flat. |
 | Disable first N layers | 4 | Number of fine-detail layers to disable. Higher = smoother local flat. |
+| Create starless image using StarNet2 | on | Generate the starless internally via StarNet2. Mutually exclusive with the next option. |
+| Image is already starless | off | Tick if the master is itself starless (e.g. pre-run through StarXTerminator). Skips the StarNet2 step. |
 | Excluded region | off | Enable exclusion regions. Use only if a first run shows overcorrection around small galaxies. |
 | Apply correction in place | on | If off, creates a new image `<master>_corrected`. |
 | Close auto-generated starless | on | Cleanup intermediate when done. |
@@ -177,6 +181,15 @@ second pass:
 ---
 
 ## Changelog
+
+### v2.2
+- Simplified the Images dialog: removed the manual starless ComboBox.
+  Starless source is now picked via two mutually exclusive checkboxes —
+  "Create starless image using StarNet2" (default on) and "Image is already
+  starless".
+- Users who prefer a different starless workflow (e.g. StarXTerminator) can
+  pre-run it on the master and feed the resulting starless directly by
+  ticking "Image is already starless".
 
 ### v2.1
 - **Exclusion regions**: mark a smaller preview as an
