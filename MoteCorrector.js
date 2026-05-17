@@ -15,12 +15,24 @@
                Workflow: open master, draw a preview around each mote, run script.
 
 #include <pjsr/Sizer.jsh>
-#include <pjsr/StdButton.jsh>
 #include <pjsr/TextAlign.jsh>
 #include <pjsr/UndoFlag.jsh>
 
+// Backward-compat shims for the V8 runtime introduced in PixInsight 1.9.4
+// (used by default on the ARM64 macOS native build, which does not ship the
+// legacy SpiderMonkey engine). The pjsr/*.jsh headers above are flagged as
+// deprecated under V8; if a future release stops processing them, the
+// underscore-prefixed constants below would become undefined and the script
+// would break. Defining them defensively keeps a single source file
+// compatible with both engines. Values match include/pjsr/UndoFlag.jsh and
+// include/pjsr/TextAlign.jsh from the PixInsight distribution.
+if (typeof UndoFlag_NoSwapFile  === "undefined") var UndoFlag_NoSwapFile  = 0x00010000;
+if (typeof TextAlign_Left       === "undefined") var TextAlign_Left       = 0x01;
+if (typeof TextAlign_Right      === "undefined") var TextAlign_Right      = 0x02;
+if (typeof TextAlign_VertCenter === "undefined") var TextAlign_VertCenter = 0x80;
+
 #define TITLE   "MoteCorrector"
-#define VERSION "2.2"
+#define VERSION "2.3"
 
 function Params() {
    this.masterId         = "";
@@ -51,11 +63,22 @@ function cloneToNewWindow(srcView, newId) {
 }
 
 function generateStarless(masterView) {
+   // Feature-detect: StarNet2 is a third-party module and is not bundled with
+   // PixInsight. On the 1.9.4 Apple Silicon (ARM) build in particular, users
+   // may not yet have a working StarNet2 installation. Fail with an actionable
+   // message rather than a generic "StarNet2 is not defined".
+   if (typeof StarNet2 == "undefined") {
+      throw new Error(
+         "StarNet2 process not found. Install the StarNet2 module from " +
+         "starnetastro.com, or tick 'Image is already starless' if your " +
+         "master is starless already.");
+   }
+
    Console.writeln("Cloning master...");
    var win = cloneToNewWindow(masterView, masterView.id + "_starless");
 
    Console.writeln("Running StarNet2...");
-   var sn = new StarNet2;
+   var sn = new StarNet2();
    sn.stride = 0;       // Stride_128
    sn.mask   = false;   // produce starless, not a mask
    sn.executeOn(win.mainView);
@@ -66,18 +89,21 @@ function generateStarless(masterView) {
 
 // ----- Dialog ---------------------------------------------------------------
 
-function CorrectorDialog() {
-   this.__base__ = Dialog;
-   this.__base__();
-   var self = this;
-   this.windowTitle = TITLE + " v" + VERSION;
-   this.minWidth = 640;
+// Populate a Dialog instance with all controls and layout. Engine-agnostic:
+// works whether the instance was created via ES6 `class extends Dialog`
+// (required on V8 / PI 1.9.4) or via the legacy `__base__` constructor
+// pattern (still works on SpiderMonkey / PI 1.8.9 through 1.9.3). The
+// instance is passed in as `self` rather than via `this` so the body is
+// callable from either inheritance shim below.
+function buildCorrectorDialog(self) {
+   self.windowTitle = TITLE + " v" + VERSION;
+   self.minWidth = 640;
 
    var LABEL_W = 240;   // wide enough for "MultiscaleLinearTransform layers:"
    var SPIN_W  = 80;
 
    // ===== Instructions =====
-   var helpBox = new GroupBox(this);
+   var helpBox = new GroupBox(self);
    helpBox.title = "How to mark dust motes";
    var helpText = new Label(helpBox);
    helpText.useRichText = true;
@@ -97,13 +123,13 @@ function CorrectorDialog() {
          "draw a smaller preview around the galaxy &mdash; with its <i>perimeter on " +
          "clean sky</i>, just like a mote rectangle &mdash; then check it in the " +
          "<i>Exclusion regions</i> list below.";
-   var helpSizer = new VerticalSizer;
+   var helpSizer = new VerticalSizer();
    helpSizer.margin = 8;
    helpSizer.add(helpText);
    helpBox.sizer = helpSizer;
 
    // ===== Master + preview status =====
-   var masterCombo = new ComboBox(this);
+   var masterCombo = new ComboBox(self);
    var wins = ImageWindow.windows;
    for (var i = 0; i < wins.length; ++i)
       masterCombo.addItem(wins[i].mainView.id);
@@ -120,12 +146,14 @@ function CorrectorDialog() {
    selectComboItem(masterCombo, params.masterId);
 
    // Preview-count indicator
-   var previewStatus = new Label(this);
+   var previewStatus = new Label(self);
    previewStatus.useRichText = true;
    previewStatus.minWidth = 200;
    function updatePreviewStatus() {
+      // V8 (PI 1.9.4) returns null on lookup miss; SpiderMonkey returns an
+      // invalid view object whose .isNull is true. Handle both.
       var v = View.viewById(params.masterId);
-      if (v.isNull) {
+      if (v === null || v.isNull) {
          previewStatus.text = "<i>(select a master)</i>";
          return;
       }
@@ -142,7 +170,7 @@ function CorrectorDialog() {
       rebuildExclusionTree();
    };
    // Refresh button — re-counts previews after user draws them with dialog open
-   var refreshBtn = new ToolButton(this);
+   var refreshBtn = new ToolButton(self);
    refreshBtn.icon = self.scaledResource(":/icons/refresh.png");
    refreshBtn.toolTip = "Refresh preview list after drawing previews on the master";
    refreshBtn.onClick = function() {
@@ -154,14 +182,14 @@ function CorrectorDialog() {
    // checked: clicking the unchecked one toggles modes; clicking an already-
    // checked one re-asserts it (no-op). This mirrors radio-button semantics
    // while preserving the requested checkbox visuals.
-   var alreadyStarlessCheck = new CheckBox(this);
+   var alreadyStarlessCheck = new CheckBox(self);
    alreadyStarlessCheck.text = "Image is already starless";
    alreadyStarlessCheck.checked = params.masterIsStarless;
    alreadyStarlessCheck.toolTip = "Skip StarNet2 and use the master itself as the starless source\n" +
                                   "for the local flat. Use this if you pre-ran a starless tool\n" +
                                   "(e.g. StarXTerminator) and want to feed the result directly.";
 
-   var createStarlessCheck = new CheckBox(this);
+   var createStarlessCheck = new CheckBox(self);
    createStarlessCheck.text = "Create starless image using StarNet2";
    createStarlessCheck.checked = !params.masterIsStarless;
    createStarlessCheck.toolTip = "Generate a starless copy of the master via StarNet2.\n" +
@@ -194,13 +222,13 @@ function CorrectorDialog() {
    };
 
    // Numeric controls
-   var featherSpin = new SpinBox(this);
+   var featherSpin = new SpinBox(self);
    featherSpin.setRange(1, 200);
    featherSpin.value = params.feather;
    featherSpin.setFixedWidth(SPIN_W);
    featherSpin.onValueUpdated = function(v) { params.feather = v; };
 
-   var layersSpin = new SpinBox(this);
+   var layersSpin = new SpinBox(self);
    layersSpin.setRange(2, 12);
    layersSpin.value = params.mltLayers;
    layersSpin.setFixedWidth(SPIN_W);
@@ -213,7 +241,7 @@ function CorrectorDialog() {
       }
    };
 
-   var killSpin = new SpinBox(this);
+   var killSpin = new SpinBox(self);
    killSpin.setRange(0, 12);
    killSpin.value = params.killLayers;
    killSpin.setFixedWidth(SPIN_W);
@@ -222,7 +250,7 @@ function CorrectorDialog() {
    killSpin.onValueUpdated = function(v) { params.killLayers = v; };
 
    // In-place checkbox
-   var inPlaceCheck = new CheckBox(this);
+   var inPlaceCheck = new CheckBox(self);
    inPlaceCheck.text = "Apply correction in place (overwrite master)";
    inPlaceCheck.checked = params.inPlace;
    inPlaceCheck.toolTip = "If checked, the master image is modified directly.\n" +
@@ -230,7 +258,7 @@ function CorrectorDialog() {
    inPlaceCheck.onCheck = function(checked) { params.inPlace = checked; };
 
    // Cleanup checkboxes
-   var cleanStarlessCheck = new CheckBox(this);
+   var cleanStarlessCheck = new CheckBox(self);
    cleanStarlessCheck.text = "Close auto-generated starless when done";
    cleanStarlessCheck.checked = params.cleanStarless;
    cleanStarlessCheck.toolTip = "Closes the starless image after correction. Only applies " +
@@ -241,7 +269,7 @@ function CorrectorDialog() {
    // auto-generated to close in that mode.
    cleanStarlessCheck.enabled = !params.masterIsStarless;
 
-   var cleanLocalFlatCheck = new CheckBox(this);
+   var cleanLocalFlatCheck = new CheckBox(self);
    cleanLocalFlatCheck.text = "Close local_flat_full when done";
    cleanLocalFlatCheck.checked = params.cleanLocalFlat;
    cleanLocalFlatCheck.toolTip = "Closes the local_flat_full intermediate after correction. " +
@@ -252,14 +280,14 @@ function CorrectorDialog() {
    // galaxies/nebulae left in the starless. The correction is feathered to zero
    // inside these rectangles so a residual bright bump in local_flat_full does
    // not darken the source on division.
-   var excludeCheck = new CheckBox(this);
+   var excludeCheck = new CheckBox(self);
    excludeCheck.text = "Excluded region (only check the box if your first run shows overcorrection around small galaxies)";
    excludeCheck.checked = params.useExclusions;
    excludeCheck.toolTip = "Mark some previews as exclusion regions. The correction is\n" +
                           "feathered out inside them, so faint galaxies left in the\n" +
                           "starless do not cause overcorrection.";
 
-   var exclusionTree = new TreeBox(this);
+   var exclusionTree = new TreeBox(self);
    exclusionTree.alternateRowColor = true;
    exclusionTree.numberOfColumns = 1;
    exclusionTree.headerVisible = false;
@@ -270,7 +298,7 @@ function CorrectorDialog() {
    function rebuildExclusionTree() {
       exclusionTree.clear();
       var v = View.viewById(params.masterId);
-      if (v.isNull) { fitTreeToFourRows(); return; }
+      if (v === null || v.isNull) { fitTreeToFourRows(); return; }
       var pvs = v.window.previews;
       // Drop stale IDs that no longer exist as previews.
       var live = {};
@@ -324,7 +352,7 @@ function CorrectorDialog() {
       lbl.text = text;
       lbl.minWidth = LABEL_W;
       lbl.textAlignment = TextAlign_Left | TextAlign_VertCenter;
-      var s = new HorizontalSizer; s.spacing = 8;
+      var s = new HorizontalSizer(); s.spacing = 8;
       s.add(lbl); s.add(ctrl); s.addStretch();
       return s;
    }
@@ -345,34 +373,34 @@ function CorrectorDialog() {
    }
 
    // Buttons: Apply (run, keep open) and Close (dismiss).
-   var apply = new PushButton(this);  apply.text  = "Apply";
-   var cancel = new PushButton(this); cancel.text = "Close";
+   var apply = new PushButton(self);  apply.text  = "Apply";
+   var cancel = new PushButton(self); cancel.text = "Close";
    apply.toolTip  = "Run the correction without closing this dialog. " +
                     "Adjust parameters and click Apply again to iterate.";
    cancel.toolTip = "Close the dialog.";
    apply.onClick  = function() { runCorrection(); };
    cancel.onClick = function() { self.cancel(); };
-   var btns = new HorizontalSizer; btns.spacing = 6;
+   var btns = new HorizontalSizer(); btns.spacing = 6;
    btns.addStretch();
    btns.add(apply);
    btns.add(cancel);
 
    // Master row with refresh button + status
-   var masterRow = new HorizontalSizer; masterRow.spacing = 8;
-   var masterLbl = new Label(this);
+   var masterRow = new HorizontalSizer(); masterRow.spacing = 8;
+   var masterLbl = new Label(self);
    masterLbl.text = "Master image:";
    masterLbl.minWidth = LABEL_W;
    masterLbl.textAlignment = TextAlign_Left | TextAlign_VertCenter;
    masterRow.add(masterLbl); masterRow.add(masterCombo, 100); masterRow.add(refreshBtn);
 
-   var statusRow = new HorizontalSizer; statusRow.spacing = 8;
-   var statusLbl = new Label(this); statusLbl.text = ""; statusLbl.minWidth = LABEL_W;
+   var statusRow = new HorizontalSizer(); statusRow.spacing = 8;
+   var statusLbl = new Label(self); statusLbl.text = ""; statusLbl.minWidth = LABEL_W;
    statusRow.add(statusLbl); statusRow.add(previewStatus); statusRow.addStretch();
 
    // Group: image inputs
-   var inputsGroup = new GroupBox(this);
+   var inputsGroup = new GroupBox(self);
    inputsGroup.title = "Images";
-   var inputsSizer = new VerticalSizer; inputsSizer.margin = 10; inputsSizer.spacing = 8;
+   var inputsSizer = new VerticalSizer(); inputsSizer.margin = 10; inputsSizer.spacing = 8;
    inputsSizer.add(masterRow);
    inputsSizer.add(statusRow);
    inputsSizer.add(createStarlessCheck);
@@ -380,57 +408,90 @@ function CorrectorDialog() {
    inputsGroup.sizer = inputsSizer;
 
    // Group: local flat parameters
-   var paramsGroup = new GroupBox(this);
+   var paramsGroup = new GroupBox(self);
    paramsGroup.title = "Correction parameters";
-   var paramsSizer = new VerticalSizer; paramsSizer.margin = 10; paramsSizer.spacing = 8;
+   var paramsSizer = new VerticalSizer(); paramsSizer.margin = 10; paramsSizer.spacing = 8;
    paramsSizer.add(row("Feather (px):",                     featherSpin));
    paramsSizer.add(row("MultiscaleLinearTransform layers:", layersSpin));
    paramsSizer.add(row("Disable first N layers:",           killSpin));
    paramsGroup.sizer = paramsSizer;
 
    // Group: exclusion regions
-   var exclusionGroup = new GroupBox(this);
+   var exclusionGroup = new GroupBox(self);
    exclusionGroup.title = "Exclusion regions";
-   var exclusionSizer = new VerticalSizer;
+   var exclusionSizer = new VerticalSizer();
    exclusionSizer.margin = 10; exclusionSizer.spacing = 8;
    exclusionSizer.add(excludeCheck);
    exclusionSizer.add(exclusionTree);
    exclusionGroup.sizer = exclusionSizer;
 
    // Group: output options
-   var outputGroup = new GroupBox(this);
+   var outputGroup = new GroupBox(self);
    outputGroup.title = "Output";
-   var outputSizer = new VerticalSizer; outputSizer.margin = 10; outputSizer.spacing = 8;
+   var outputSizer = new VerticalSizer(); outputSizer.margin = 10; outputSizer.spacing = 8;
    outputSizer.add(inPlaceCheck);
    outputSizer.add(cleanStarlessCheck);
    outputSizer.add(cleanLocalFlatCheck);
    outputGroup.sizer = outputSizer;
 
    // Copyright footer
-   var copyright = new Label(this);
+   var copyright = new Label(self);
    copyright.text = "\u00A9 2026 Yuxuan Wang";
    copyright.textAlignment = TextAlign_Right | TextAlign_VertCenter;
    copyright.styleSheet = "QLabel { color: gray; font-size: 10px; }";
 
    // Top-level layout
-   this.sizer = new VerticalSizer; this.sizer.margin = 10; this.sizer.spacing = 10;
-   this.sizer.add(helpBox);
-   this.sizer.add(inputsGroup);
-   this.sizer.add(paramsGroup);
-   this.sizer.add(exclusionGroup);
-   this.sizer.add(outputGroup);
-   this.sizer.add(btns);
-   this.sizer.addSpacing(4);
-   this.sizer.add(copyright);
-   this.adjustToContents();
+   self.sizer = new VerticalSizer(); self.sizer.margin = 10; self.sizer.spacing = 10;
+   self.sizer.add(helpBox);
+   self.sizer.add(inputsGroup);
+   self.sizer.add(paramsGroup);
+   self.sizer.add(exclusionGroup);
+   self.sizer.add(outputGroup);
+   self.sizer.add(btns);
+   self.sizer.addSpacing(4);
+   self.sizer.add(copyright);
+   self.adjustToContents();
 }
-CorrectorDialog.prototype = new Dialog;
+
+// Engine-conditional Dialog subclassing.
+//
+// V8 (default on PI 1.9.4, mandatory on the ARM64 macOS build): the legacy
+// `__base__` pattern silently fails to set up inheritance from Dialog,
+// breaking the GUI without any error. Per the V8 Script Porting Guide,
+// ES6 `class extends Dialog` is the only way to inherit from a core PJSR
+// object under V8.
+//
+// SpiderMonkey 24 (default on PI 1.8.9 through 1.9.3, plus PI 1.9.4 non-ARM
+// in its default mode): does not understand the ES6 `class` keyword at all
+// and would parse-error on a source-level class declaration. The legacy
+// `__base__` pattern is the standard idiom there.
+//
+// To keep a single source file on both engines, the class declaration is
+// wrapped in an `eval` string. SpiderMonkey parses the string as a plain
+// string literal at load time (fine), then throws SyntaxError when it
+// actually tries to eval it at run time \u2014 which the catch handles by
+// falling back to the constructor-function form.
+var CorrectorDialog;
+try {
+   CorrectorDialog = eval(
+      "(class extends Dialog { " +
+         "constructor() { super(); buildCorrectorDialog(this); } " +
+      "})"
+   );
+} catch (e) {
+   CorrectorDialog = function() {
+      this.__base__ = Dialog;
+      this.__base__();
+      buildCorrectorDialog(this);
+   };
+   CorrectorDialog.prototype = new Dialog();
+}
 
 // ----- Main pipeline --------------------------------------------------------
 
 function correctMotes() {
    var master = View.viewById(params.masterId);
-   if (master.isNull) {
+   if (master === null || master.isNull) {
       Console.criticalln("Master image not found: " + params.masterId);
       return;
    }
@@ -488,7 +549,7 @@ function correctMotes() {
    var lf = cloneToNewWindow(starless, "local_flat_full");
 
    // 3. MLT: disable first N detail layers, keep the rest + residual
-   var mlt = new MultiscaleLinearTransform;
+   var mlt = new MultiscaleLinearTransform();
    mlt.numberOfLayers = params.mltLayers;
    var L = [];
    for (var i = 0; i < params.mltLayers; ++i) {
@@ -612,7 +673,7 @@ function correctMotes() {
    }
    var expr = "$T*(1+min(1," + sumM + ")*((" + sumMB + ")/max(" + sumM +
               ",1e-10)/" + lfEff + "-1))";
-   var pm = new PixelMath;
+   var pm = new PixelMath();
    pm.expression = expr;
    pm.useSingleExpression = true;
    pm.createNewImage      = !params.inPlace;
@@ -644,7 +705,7 @@ function correctMotes() {
 
 function main() {
    Console.show();
-   var dlg = new CorrectorDialog;
+   var dlg = new CorrectorDialog();
    dlg.execute();
 }
 

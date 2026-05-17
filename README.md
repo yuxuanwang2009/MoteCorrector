@@ -102,12 +102,22 @@ just localized and automated across many motes at once.
 
 ## Requirements
 
-- **PixInsight 1.8.9** or later.
+- **PixInsight 1.8.9 or later** — including the native Apple Silicon (ARM64)
+  build of PixInsight 1.9.4 "Lockhart". A single source file works on both
+  scripting runtimes: the legacy SpiderMonkey 24 engine (PixInsight 1.8.9
+  through 1.9.3, and the default on PixInsight 1.9.4 outside the ARM Mac
+  build) and the new V8 engine (mandatory on the PixInsight 1.9.4 ARM Mac
+  build, optional elsewhere on 1.9.4). The script detects the engine at
+  load time and selects the correct Dialog inheritance shim for each.
 - **StarNet2** module — required to derive the starless used to build the
   local flat. If your master is *already* starless (e.g. you pre-ran
   StarXTerminator on it and want to feed that result directly), tick
-  **Master image is already starless (skip StarNet2)** and StarNet2 is not
-  needed.
+  **Image is already starless** and StarNet2 is not needed.
+  - On the **PI 1.9.4 Apple Silicon (ARM) build**, StarNet2 is a third-party
+    install from [starnetastro.com](https://www.starnetastro.com/download/)
+    and TensorFlow runs CPU-only. If StarNet2 is missing or fails to load,
+    MoteCorrector reports an actionable error and you can fall back to the
+    "Image is already starless" workflow with an external starless tool.
 
 
 ---
@@ -181,6 +191,40 @@ second pass:
 ---
 
 ## Changelog
+
+### v2.3
+- **PixInsight 1.9.4 V8 runtime support, including the ARM64 Mac build.**
+  The 1.9.4 "Lockhart" release replaced the legacy SpiderMonkey 24 scripting
+  engine with V8 to enable the Apple Silicon port; SpiderMonkey is not
+  shipped at all on the ARM64 Mac build, so V8 compatibility is mandatory
+  there. Single source file now works on both runtimes:
+  - **Dialog inheritance.** The legacy
+    `this.__base__ = Dialog; this.__base__(); …; CorrectorDialog.prototype = new Dialog`
+    pattern silently fails to set up inheritance under V8 (per the official
+    [V8 Script Porting Guide](https://pixinsight.net/dev/index.php?ams/the-new-v8-javascript-runtime-in-pixinsight-1-9-4-script-porting-guide.13/)),
+    so the GUI never appears. The script now uses ES6 `class extends Dialog`
+    on V8 and falls back to the `__base__` pattern on SpiderMonkey. The
+    class declaration is hidden inside an `eval` string so SpiderMonkey 24
+    (which parse-errors on the `class` keyword) never sees it as syntax.
+  - **`View.viewById` null-safety.** Under V8, `View.viewById()` returns
+    `null` (not an invalid view) when the ID is not found, so the previous
+    `if (v.isNull) …` guards would throw `TypeError`. All three call sites
+    now check `if (v === null || v.isNull)`.
+  - **Constant shims for `UndoFlag_NoSwapFile` and `TextAlign_*`.** The
+    `#include <pjsr/*.jsh>` headers that defined these constants are
+    deprecated under V8. The script keeps the includes for SpiderMonkey
+    compatibility and adds a `typeof === "undefined"` shim that provides
+    the underlying integer values if a future V8 release stops processing
+    them. The unused `#include <pjsr/StdButton.jsh>` was dropped.
+- StarNet2 is now feature-detected before use. If the module is missing
+  (common scenario on the ARM Mac build, where StarNet2 is a third-party
+  install), the script reports an actionable message pointing at
+  [starnetastro.com](https://www.starnetastro.com/download/) and the
+  "Image is already starless" fallback, instead of throwing a generic
+  reference error.
+- Defensive cleanups: explicit `()` on every `new` call (StarNet2,
+  MultiscaleLinearTransform, PixelMath, CorrectorDialog, HorizontalSizer,
+  VerticalSizer) for V8-era idiomatic clarity.
 
 ### v2.2
 - Simplified the Images dialog: removed the manual starless ComboBox.
